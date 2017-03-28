@@ -9,7 +9,7 @@
 
 
 ###---load packages---###
-#.libPaths("P:/User/Amanda.Teo/R/Packages")
+.libPaths("P:/User/Amanda.Teo/R/Packages")
 library(ggplot2)
 
 ###---generate assumptions---###
@@ -19,10 +19,10 @@ mu <- 0.1 #on average, 10% of people will convert
 sigma <- 0.7 #average distance away from mu
 
 #sample outcomes
-convert_c <- 10
+convert_c <- 20
 num_c <- 100
 
-convert_t <- 15
+convert_t <- 20
 num_t <- 100
 
 ###---visualise beta distribution---###
@@ -104,61 +104,90 @@ ggplot(data = df, aes(x = x_axis, y = y_axis)) +
 
 ###---compute the error function---###
 
-#' cannot use dbeta function because R does not compute integrals
-#' \increased the granularity of lamda for more accurate computation
+#' error function tells us what is the probability we make a mistake in choosing to display a particular variant
+#' increased the granularity of lamda for more accurate computation
 
 #compute here the cumlative probabilities for an interval p(a<x<b)
-lamda = seq(0,1,length.out = 10000)
+lamda = seq(0,1,length.out = 10001)
 
 cumprob_c <- pbeta(lamda, a_c, b_c)
 lag <- shift_by(cumprob_c, -1)
 lag[is.na(lag)] <- 0
-interval_c <- cumprob_c - lag
+interval_c <- (cumprob_c - lag)[-1]
 
 cumprob_t <- pbeta(lamda, a_t, b_t)
 lag <- shift_by(cumprob_t, -1)
 lag[is.na(lag)] <- 0
-interval_t <- cumprob_t - lag
+interval_t <- (cumprob_t - lag)[-1]
 
-#calculate error function for treatment i.e. prob. that treatment better than control
-error_treat <- 0
+#calculate error function for control i.e. prob. that treatment better than control
+error_treatbetter <- 0
 rowtotal <- sum(interval_t)
-for (i in 2:length(lamda)) {
-  rowtotal <- rowtotal - interval_t[i-1]
-  error_treat <- error_treat + interval_c[i]*rowtotal
+for (i in 1:(length(lamda)-1)) {
+  rowtotal <- rowtotal - interval_t[i]
+  error_treatbetter <- error_treatbetter + interval_c[i]*rowtotal
 }
 
-error_control <- 0
+#error function for treatment
+error_controlbetter <- 0
 rowtotal <- sum(interval_c)
-for (i in 2:length(lamda)) {
-  rowtotal <- rowtotal - interval_c[i-1]
-  error_control <- error_control + interval_t[i]*rowtotal
+for (i in 1:(length(lamda)-1)) {
+  rowtotal <- rowtotal - interval_c[i]
+  error_controlbetter <- error_controlbetter + interval_t[i]*rowtotal
 }
 
-#' note precision in probability is up to 3 decimal places only
+#alternative calculation for error function of control i.e. prob that treatment is better
+#NOT WORKING
+
+f_t <- function(x) dbeta(x, a_t, b_t)
+marg_probabilty_treatbetter <- function(lamda_c) {
+  integrate(f_t, lower = lamda_c, upper = 1)
+} 
+f_c <- function(lamda_c) {
+  val <- (marg_probabilty_treatbetter(lamda_c))[[1]]
+  dbeta(lamda_c, a_c, b_c)*val
+}
+error_treatbetter_alt <- integrate(f_c, lower = 0, upper = 1)
+
+format(error_treatbetter_alt$value, nsmall = 10)
+
+#' note precision in probability is up to 3 decimal places only for 100,000 intervals
+#' precision not great when using 10,000 intervals
 
 ###---compute the expected loss---###
 
 #' this tells us the expected loss from choosing one variation over the other
+#' first calculate loss from choosing B over A
 
-#loss from choosing one variation over another
-loss_val <- function (lamda_a,lamda_b,choice) {
-  if (choice == "A") {
-    x <- max(lamda_b - lamda_a, 0)
-  } else if (choice == "B") {
-    x <- max(lamda_a - lamda_b,0)
-  } else {
-    x <- NA
-  }
-  return(x)
+#lamda A - lamda B (10000 x 10000 matrix)
+mat_B = seq(1,1,length.out = 10001) %*% t(lamda)
+mat_B = mat_B[-1,-1]
+mat_A = t(mat_B)
+loss_choiceB <- mat_A - mat_B
+
+#convert loss matrix into lower triangular matrix
+loss_choiceB[upper.tri(loss_choiceB, diag = TRUE)] <- 0
+loss_choiceB[1:10, 1:10] #to check we did the right thing
+
+#calculate EXPECTED loss from choosing B over A
+interval_joint = interval_c %*% t(interval_t)
+
+ptm <- proc.time()
+expected_loss = 0
+for (i in 1:(length(lamda)-1)) {
+    expected_loss = expected_loss + t(loss_choiceB[i,]) %*% interval_joint[i,]
+}
+proc.time() - ptm
+
+#currently takes about 8 seconds
+
+#alternative method to calculate loss function
+integrand <- function(x) {
+  loss_func <- max(x[1] - x[2], 0)
+  loss_func*dbeta(x[1], a_c, b_c)*dbeta(x[2], a_t, b_t)
 }
 
-expected_error_A = 0
-for (i in 1:length(lamda)) {
-  for (j in 1:length(lamda)) {
-    expected_error_A <- expected_error_A + 
-                        interval_c[i]*interval_t[j]*loss_val(lamda[i], lamda[j], "A")
-  }
-}
- 
-# too slow! 
+expected_loss_alt <- adaptIntegrate(integrand, lowerLimit = c(0,0), upperLimit = c(1,1))
+format(expected_loss_alt$integral, nsmall = 10)
+
+#' expected_loss_alt gives very similar results to expected_loss when n is very large for both t and c groups
